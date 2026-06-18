@@ -2,6 +2,9 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -23,19 +26,63 @@ type Interpreter struct {
 	verbose  bool
 	maxTurns int
 	messages []Message
+	speak    bool
+	showThink  bool
+	speakCmd   *exec.Cmd
 }
 
-func NewInterpreter(registry *ToolRegistry, client *OllamaClient, verbose bool, maxTurns int) *Interpreter {
+func NewInterpreter(registry *ToolRegistry, client *OllamaClient, verbose bool, maxTurns int, speak bool) *Interpreter {
 	return &Interpreter{
-		registry: registry,
-		client:   client,
-		verbose:  verbose,
-		maxTurns: maxTurns,
+		registry:  registry,
+		client:    client,
+		verbose:   verbose,
+		maxTurns:  maxTurns,
+		speak:     speak,
+		showThink: true,
 	}
 }
 
+func (i *Interpreter) SpeakCmd() *exec.Cmd { return i.speakCmd }
+
 func (i *Interpreter) Clear() {
 	i.messages = nil
+}
+
+func (i *Interpreter) SetVerbose(v bool)    { i.verbose = v }
+func (i *Interpreter) SetMaxTurns(n int)    { i.maxTurns = n }
+func (i *Interpreter) SetSpeak(v bool)      { i.speak = v }
+func (i *Interpreter) SetShowThink(v bool)  { i.showThink = v }
+func (i *Interpreter) Verbose() bool        { return i.verbose }
+func (i *Interpreter) MaxTurns() int        { return i.maxTurns }
+func (i *Interpreter) Speak() bool          { return i.speak }
+func (i *Interpreter) ShowThink() bool      { return i.showThink }
+func (i *Interpreter) MessageCount() int    { return len(i.messages) }
+
+func speakText(text string) *exec.Cmd {
+	// Try edge-tts first (natural voice, requires pip install edge-tts + ffmpeg)
+	edgeCmd := exec.Command("edge-tts",
+		"--voice", "en-US-JennyNeural",
+		"--text", text,
+		"--write-media", "/tmp/aiml_tts.mp3",
+	)
+	if err := edgeCmd.Run(); err == nil {
+		playCmd := exec.Command("ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", "/tmp/aiml_tts.mp3")
+		playCmd.Start()
+		go func() {
+			playCmd.Wait()
+			os.Remove("/tmp/aiml_tts.mp3")
+		}()
+		return playCmd
+	}
+
+	var cmd *exec.Cmd
+	if runtime.GOOS == "darwin" {
+		cmd = exec.Command("say", text)
+	} else {
+		cmd = exec.Command("espeak", text)
+	}
+	cmd.Start()
+	return cmd
 }
 
 // Run executes one user query through the agentic loop
@@ -111,6 +158,9 @@ func (i *Interpreter) Run(systemPrompt, userInput string) {
 		// Show the answer
 		if answer != "" {
 			fmt.Printf("\n💬 Answer:\n%s\n\n", answer)
+			if i.speak {
+				i.speakCmd = speakText(answer)
+			}
 		}
 
 		// Stop conditions
@@ -136,8 +186,12 @@ func (i *Interpreter) processNodes(nodes []*Node) (done bool, toolResults []tool
 	for _, node := range nodes {
 		switch node.Tag {
 		case "think":
-			fmt.Printf("%s  ── think ──────────────────────────────%s\n", colorGray, colorReset)
-			fmt.Printf("  %s%s%s\n", colorGray, truncate(node.Text, 120), colorReset)
+			if i.showThink {
+				fmt.Printf("  %s── think ──────────────────────────────%s\n", colorGreen, colorReset)
+				for _, line := range strings.Split(node.Text, "\n") {
+					fmt.Printf("  %s%s%s\n", colorGreen, line, colorReset)
+				}
+			}
 
 		case "answer":
 			answerParts = append(answerParts, node.Text)

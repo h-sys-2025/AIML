@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -16,9 +18,12 @@ type Message struct {
 }
 
 type OllamaClient struct {
-	host   string
-	model  string
-	client *http.Client
+	host    string
+	model   string
+	client  *http.Client
+	options map[string]interface{}
+	raw     bool
+	think   *bool
 }
 
 func NewOllamaClient(host, model string) *OllamaClient {
@@ -28,13 +33,63 @@ func NewOllamaClient(host, model string) *OllamaClient {
 		client: &http.Client{
 			Timeout: 5 * time.Minute,
 		},
+		options: map[string]interface{}{
+			"temperature": 0.7,
+			"num_predict": 1024,
+			"num_ctx":     4096,
+		},
 	}
 }
 
+func (c *OllamaClient) SetRaw(v bool)   { c.raw = v }
+func (c *OllamaClient) Raw() bool       { return c.raw }
+func (c *OllamaClient) SetThink(v bool) { c.think = &v }
+func (c *OllamaClient) ClearThink()     { c.think = nil }
+func (c *OllamaClient) GetThink() *bool { return c.think }
+
+func (c *OllamaClient) SetModel(model string) {
+	c.model = model
+}
+
+func (c *OllamaClient) SetHost(host string) {
+	c.host = host
+}
+
+func (c *OllamaClient) Model() string  { return c.model }
+func (c *OllamaClient) Host() string   { return c.host }
+
+func (c *OllamaClient) SetOption(key, raw string) error {
+	// Try int, float, bool, string in order
+	if i, err := strconv.Atoi(raw); err == nil {
+		c.options[key] = i
+		return nil
+	}
+	if f, err := strconv.ParseFloat(raw, 64); err == nil {
+		c.options[key] = f
+		return nil
+	}
+	if b, err := strconv.ParseBool(raw); err == nil {
+		c.options[key] = b
+		return nil
+	}
+	c.options[key] = raw
+	return nil
+}
+
+func (c *OllamaClient) AllOptions() map[string]interface{} {
+	out := make(map[string]interface{}, len(c.options))
+	for k, v := range c.options {
+		out[k] = v
+	}
+	return out
+}
+
 type ollamaChatRequest struct {
-	Model    string            `json:"model"`
-	Messages []ollamaMessage   `json:"messages"`
-	Stream   bool              `json:"stream"`
+	Model    string                 `json:"model"`
+	Messages []ollamaMessage        `json:"messages"`
+	Stream   bool                   `json:"stream"`
+	Raw      bool                   `json:"raw,omitempty"`
+	Think    *bool                  `json:"think,omitempty"`
 	Options  map[string]interface{} `json:"options,omitempty"`
 }
 
@@ -62,32 +117,51 @@ type ChatResult struct {
 	TokPerSec float64
 }
 
-func (c *OllamaClient) Chat(systemPrompt string, messages []Message) (string, error) {
-	ollamaMsgs := []ollamaMessage{}
+func (c *OllamaClient) prepareMessages(systemPrompt string, messages []Message) []ollamaMessage {
+	if !c.raw {
+		// Normal mode: let Ollama's template handle formatting
+		ollamaMsgs := []ollamaMessage{}
+		if systemPrompt != "" {
+			ollamaMsgs = append(ollamaMsgs, ollamaMessage{Role: "system", Content: systemPrompt})
+		}
+		for _, m := range messages {
+			ollamaMsgs = append(ollamaMsgs, ollamaMessage{Role: m.Role, Content: m.Content})
+		}
+		return ollamaMsgs
+	}
 
+	// Raw mode: format everything as ChatML so Ollama bypasses its template
+	var sb strings.Builder
 	if systemPrompt != "" {
-		ollamaMsgs = append(ollamaMsgs, ollamaMessage{
-			Role:    "system",
-			Content: systemPrompt,
-		})
+		sb.WriteString("<|im_start|>system\n")
+		sb.WriteString(systemPrompt)
+		sb.WriteString("<|im_end|>\n")
 	}
-
 	for _, m := range messages {
-		ollamaMsgs = append(ollamaMsgs, ollamaMessage{
-			Role:    m.Role,
-			Content: m.Content,
-		})
+		sb.WriteString("<|im_start|>")
+		sb.WriteString(m.Role)
+		sb.WriteString("\n")
+		sb.WriteString(m.Content)
+		sb.WriteString("<|im_end|>\n")
 	}
+	sb.WriteString("<|im_start|>assistant\n")
+
+	return []ollamaMessage{{
+		Role:    "user",
+		Content: sb.String(),
+	}}
+}
+
+func (c *OllamaClient) Chat(systemPrompt string, messages []Message) (string, error) {
+	ollamaMsgs := c.prepareMessages(systemPrompt, messages)
 
 	reqBody := ollamaChatRequest{
 		Model:    c.model,
 		Messages: ollamaMsgs,
 		Stream:   false,
-		Options: map[string]interface{}{
-			"temperature": 0.7,
-			"num_predict": 1024,
-			"num_ctx":     4096,
-		},
+		Raw:      c.raw,
+		Think:    c.think,
+		Options:  copyMap(c.options),
 	}
 
 	data, err := json.Marshal(reqBody)
@@ -124,24 +198,15 @@ func (c *OllamaClient) Chat(systemPrompt string, messages []Message) (string, er
 }
 
 func (c *OllamaClient) ChatStream(systemPrompt string, messages []Message, onToken func(string)) (ChatResult, error) {
-	ollamaMsgs := []ollamaMessage{}
-
-	if systemPrompt != "" {
-		ollamaMsgs = append(ollamaMsgs, ollamaMessage{Role: "system", Content: systemPrompt})
-	}
-	for _, m := range messages {
-		ollamaMsgs = append(ollamaMsgs, ollamaMessage{Role: m.Role, Content: m.Content})
-	}
+	ollamaMsgs := c.prepareMessages(systemPrompt, messages)
 
 	reqBody := ollamaChatRequest{
 		Model:    c.model,
 		Messages: ollamaMsgs,
 		Stream:   true,
-		Options: map[string]interface{}{
-			"temperature": 0.7,
-			"num_predict": 1024,
-			"num_ctx":     4096,
-		},
+		Raw:      c.raw,
+		Think:    c.think,
+		Options:  copyMap(c.options),
 	}
 
 	data, err := json.Marshal(reqBody)
@@ -199,4 +264,12 @@ func (c *OllamaClient) ChatStream(systemPrompt string, messages []Message, onTok
 
 	resp.Body.Close()
 	return result, scanner.Err()
+}
+
+func copyMap(m map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{}, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }

@@ -202,6 +202,34 @@ func registerSystemTools(r *ToolRegistry) {
 		},
 	})
 
+	// print
+	r.Register(&ToolDef{
+		Name:        "print",
+		Description: "Display text output to the user (URLs, lists, search results, code, etc.). Use this to show information without ending the task.",
+		Args:        []ArgDef{},
+		Handler: func(attrs map[string]string, body string) ToolResult {
+			text := strings.TrimSpace(body)
+			if text == "" {
+				text = "(empty)"
+			}
+			return ToolResult{Output: text}
+		},
+	})
+
+	// thinking
+	r.Register(&ToolDef{
+		Name:        "thinking",
+		Description: "Show your internal reasoning / thought process. Use this BEFORE every tool call to explain what you're doing and why.",
+		Args:        []ArgDef{},
+		Handler: func(attrs map[string]string, body string) ToolResult {
+			text := strings.TrimSpace(body)
+			if text == "" {
+				text = "(thinking...)"
+			}
+			return ToolResult{Output: "💭 " + text}
+		},
+	})
+
 	// which
 	r.Register(&ToolDef{
 		Name:        "which",

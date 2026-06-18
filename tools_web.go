@@ -70,10 +70,15 @@ func registerWebSearch(r *ToolRegistry) {
 			}
 
 			client := &http.Client{Timeout: 10 * time.Second}
+
+			// Try DuckDuckGo HTML (non-JS) first, fall back to lite
 			form := url.Values{"q": {q}}
-			resp, err := client.PostForm("https://lite.duckduckgo.com/lite/", form)
+			resp, err := client.PostForm("https://html.duckduckgo.com/html/", form)
 			if err != nil {
-				return ToolResult{Error: fmt.Sprintf("Search request failed: %v", err)}
+				resp, err = client.PostForm("https://lite.duckduckgo.com/lite/", form)
+				if err != nil {
+					return ToolResult{Error: fmt.Sprintf("Search request failed: %v", err)}
+				}
 			}
 			defer resp.Body.Close()
 
@@ -82,17 +87,14 @@ func registerWebSearch(r *ToolRegistry) {
 				return ToolResult{Error: fmt.Sprintf("Read search results failed: %v", err)}
 			}
 
-			results := parseDDGLite(string(html))
+			results := parseDDGHTML(string(html))
 			if len(results) == 0 {
-				return ToolResult{Output: fmt.Sprintf("No search results for '%s'", q)}
+				return ToolResult{Output: fmt.Sprintf("No search results for '%s' — try a different query or use read_page.", q)}
 			}
 
 			var sb strings.Builder
 			fmt.Fprintf(&sb, "Search results for '%s':\n\n", q)
 			for i, r := range results {
-				if i >= 10 {
-					break
-				}
 				fmt.Fprintf(&sb, "%d. %s\n", i+1, r.Title)
 				fmt.Fprintf(&sb, "   %s\n", r.URL)
 				if r.Snippet != "" {
@@ -112,6 +114,50 @@ type ddgResult struct {
 	Snippet string
 }
 
+func parseDDGHTML(html string) []ddgResult {
+	var results []ddgResult
+
+	// Match result blocks: <h2 class="result__title">...<a class="result__a" href="URL">TITLE</a>...
+	blockRe := regexp.MustCompile(`<h2[^>]*class="[^"]*result__title[^"]*"[^>]*>.*?<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>.*?</h2>`)
+	snippetRe := regexp.MustCompile(`<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</a>`)
+
+	blocks := blockRe.FindAllStringSubmatch(html, -1)
+	snippets := snippetRe.FindAllStringSubmatch(html, -1)
+
+	for _, m := range blocks {
+		href := m[1]
+		title := stripTags(m[2])
+		if href == "" || title == "" {
+			continue
+		}
+		// Skip DDG internal links
+		if strings.HasPrefix(href, "/") || strings.HasPrefix(href, "#") {
+			continue
+		}
+		// Decode HTML entities in URL
+		href = entityReplacer.Replace(href)
+		results = append(results, ddgResult{Title: title, URL: href})
+	}
+
+	// Attach snippets to matching results
+	snipped := 0
+	for _, s := range snippets {
+		snip := strings.TrimSpace(stripTags(s[1]))
+		snip = strings.ReplaceAll(snip, "\n", " ")
+		snip = regexp.MustCompile(`\s+`).ReplaceAllString(snip, " ")
+		if snip != "" && snipped < len(results) {
+			results[snipped].Snippet = snip
+			snipped++
+		}
+	}
+
+	if len(results) > 10 {
+		results = results[:10]
+	}
+	return results
+}
+
+// Fallback parser for lite.duckduckgo.com/lite/ format
 func parseDDGLite(html string) []ddgResult {
 	var results []ddgResult
 
@@ -121,7 +167,6 @@ func parseDDGLite(html string) []ddgResult {
 	snippets := snipRe.FindAllStringSubmatch(html, -1)
 	links := linkRe.FindAllStringSubmatch(html, -1)
 
-	// Filter only search result links (skip navigation/UI links)
 	var searchLinks []ddgResult
 	for _, m := range links {
 		href := m[1]

@@ -88,6 +88,7 @@ func RegisterAllTools(r *ToolRegistry) {
 	registerFileTools(r)
 	registerSystemTools(r)
 	registerWebTools(r)
+	registerExtraTools(r)
 }
 
 func (r *ToolRegistry) listNames() string {

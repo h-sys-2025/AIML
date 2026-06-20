@@ -21,6 +21,8 @@ func main() {
 	listen := flag.Bool("listen", false, "Capture microphone input for questions instead of typing (requires sox+whisper)")
 	nothink := flag.Bool("nothink", true, "Disable think/reasoning blocks (default: on)")
 	think := flag.Bool("think", false, "Enable think/reasoning blocks (overrides -nothink)")
+	web := flag.Bool("web", false, "Start web UI on localhost:6769")
+	webAddr := flag.String("web-addr", ":6769", "Web UI listen address")
 	flag.Parse()
 
 	registry := NewToolRegistry()
@@ -53,6 +55,15 @@ func main() {
 		systemPrompt = BuildSystemPrompt(registry, noThinkMode)
 	}
 
+	if *web {
+		go func() {
+			err := StartWebServer(*webAddr, registry, client, systemPrompt, noThinkMode)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  Web server error: %v\n", err)
+			}
+		}()
+	}
+
 	fmt.Printf("🤖 AIML Agent — model: %s @ %s\n", *model, *host)
 	if *speak {
 		fmt.Println("  Speak mode ON — AI will read answers aloud")
@@ -64,6 +75,9 @@ func main() {
 		fmt.Println("  Think mode OFF — AI will respond directly without reasoning blocks")
 	} else {
 		fmt.Println("  Think mode ON — AI will show reasoning in <tool:thinking> blocks")
+	}
+	if *web {
+		fmt.Printf("  Web UI: http://localhost%s\n", *webAddr)
 	}
 	fmt.Println("Commands: /clear  /help  exit")
 	fmt.Println()
@@ -82,6 +96,10 @@ func main() {
 		} else {
 			fmt.Print("You> ")
 			if !scanner.Scan() {
+				if *web {
+					// Stdin closed but web mode — stay alive for web clients
+					select {}
+				}
 				break
 			}
 			input = strings.TrimSpace(scanner.Text())

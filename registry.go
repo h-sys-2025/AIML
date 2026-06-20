@@ -1,6 +1,9 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // ArgDef describes a tool argument
 type ArgDef struct {
@@ -15,6 +18,7 @@ type ToolDef struct {
 	Name        string
 	Description string
 	Args        []ArgDef
+	Examples    []string // 2-3 usage examples showing the XML format
 	Handler     func(attrs map[string]string, body string) ToolResult
 }
 
@@ -104,4 +108,57 @@ func (r *ToolRegistry) listNames() string {
 		out += n
 	}
 	return out
+}
+
+// Help returns a formatted help string for a tool (or all tools if name is empty).
+func (r *ToolRegistry) Help(name string) string {
+	if name == "" {
+		var sb strings.Builder
+		sb.WriteString("Available tools:\n")
+		for _, t := range r.List() {
+			sb.WriteString(fmt.Sprintf("\n  %s — %s\n", t.Name, t.Description))
+		}
+		sb.WriteString("\nUse <tool:help tool=\"TOOL_NAME\"> for details on a specific tool.")
+		return sb.String()
+	}
+
+	t, ok := r.Get(name)
+	if !ok {
+		return fmt.Sprintf("Unknown tool '%s'. Use <tool:help> for a list.", name)
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%s — %s\n\n", t.Name, t.Description)
+
+	if len(t.Args) > 0 {
+		sb.WriteString("Parameters:\n")
+		for _, a := range t.Args {
+			req := ""
+			if a.Required {
+				req = " (required)"
+			}
+			fmt.Fprintf(&sb, "  %s (%s)%s — %s\n", a.Name, a.Type, req, a.Description)
+		}
+	} else {
+		sb.WriteString("Parameters: none\n")
+	}
+
+	if len(t.Examples) > 0 {
+		sb.WriteString("\nExamples:\n")
+		for _, ex := range t.Examples {
+			fmt.Fprintf(&sb, "  %s\n", ex)
+		}
+	} else {
+		// Auto-generate a basic example from args
+		var exAttrs, exTag string
+		exTag = "tool:" + t.Name
+		for _, a := range t.Args {
+			if a.Required {
+				exAttrs += fmt.Sprintf(` %s="<%s>"`, a.Name, a.Name)
+			}
+		}
+		fmt.Fprintf(&sb, "\nExample:\n  <%s%s></%s>\n", exTag, exAttrs, exTag)
+	}
+
+	return sb.String()
 }

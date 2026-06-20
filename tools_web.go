@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -60,6 +62,10 @@ func registerWebSearch(r *ToolRegistry) {
 		Args: []ArgDef{
 			{Name: "query", Type: "string", Required: true, Description: "Search query"},
 		},
+		Examples: []string{
+			`<tool:web_search query="latest news on AI"></tool:web_search>`,
+			`<tool:web_search query="weather in Tokyo 2026"></tool:web_search>`,
+		},
 		Handler: func(attrs map[string]string, body string) ToolResult {
 			q := attrs["query"]
 			if q == "" {
@@ -93,17 +99,33 @@ func registerWebSearch(r *ToolRegistry) {
 			}
 
 			var sb strings.Builder
-			fmt.Fprintf(&sb, "Search results for '%s':\n\n", q)
+			fmt.Fprintf(&sb, "# Search results for '%s'\n\n", q)
 			for i, r := range results {
-				fmt.Fprintf(&sb, "%d. %s\n", i+1, r.Title)
-				fmt.Fprintf(&sb, "   %s\n", r.URL)
+				fmt.Fprintf(&sb, "## %d. [%s](%s)\n\n", i+1, r.Title, r.URL)
 				if r.Snippet != "" {
-					fmt.Fprintf(&sb, "   %s\n", r.Snippet)
+					fmt.Fprintf(&sb, "%s\n\n", r.Snippet)
 				}
-				sb.WriteByte('\n')
 			}
 
-			return ToolResult{Output: strings.TrimSpace(sb.String())}
+			markdown := strings.TrimSpace(sb.String())
+
+			// Save to .md file for AI reference
+			safeName := strings.Map(func(r rune) rune {
+				if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == ' ' || r == '-' || r == '_' {
+					return r
+				}
+				return '_'
+			}, q)
+			if len(safeName) > 40 {
+				safeName = safeName[:40]
+			}
+			fileName := fmt.Sprintf("search_%s.md", strings.TrimSpace(safeName))
+			searchDir := "search_results"
+			os.MkdirAll(searchDir, 0755)
+			filePath := filepath.Join(searchDir, fileName)
+			os.WriteFile(filePath, []byte(markdown), 0644)
+
+			return ToolResult{Output: fmt.Sprintf("%s\n\n---\nSaved to: %s", markdown, filePath)}
 		},
 	})
 }
@@ -117,8 +139,8 @@ type ddgResult struct {
 func parseDDGHTML(html string) []ddgResult {
 	var results []ddgResult
 
-	// Match result blocks: <h2 class="result__title">...<a class="result__a" href="URL">TITLE</a>...
-	blockRe := regexp.MustCompile(`<h2[^>]*class="[^"]*result__title[^"]*"[^>]*>.*?<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>.*?</h2>`)
+	// Match title links: <a rel="nofollow" class="result__a" href="URL">TITLE</a>
+	blockRe := regexp.MustCompile(`<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>`)
 	snippetRe := regexp.MustCompile(`<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</a>`)
 
 	blocks := blockRe.FindAllStringSubmatch(html, -1)

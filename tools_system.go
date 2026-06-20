@@ -17,8 +17,13 @@ func registerSystemTools(r *ToolRegistry) {
 		Description: "Run a shell command. Output shows the command, stdout/stderr, and exit code (0=success).",
 		Args: []ArgDef{
 			{Name: "cmd", Type: "string", Required: true, Description: "Shell command to run"},
-			{Name: "timeout", Type: "string", Required: false, Description: "Timeout in seconds (default: 30)"},
+			{Name: "timeout", Type: "int", Required: false, Description: "Timeout in seconds (default: 30)"},
 			{Name: "dir", Type: "string", Required: false, Description: "Working directory for the command"},
+		},
+		Examples: []string{
+			`<tool:bash cmd="ls -la"></tool:bash>`,
+			`<tool:bash cmd="go build ./..." dir="/home/project"></tool:bash>`,
+			`<tool:bash cmd="ping -c 4 google.com" timeout="10"></tool:bash>`,
 		},
 		Handler: func(attrs map[string]string, body string) ToolResult {
 			cmd := attrs["cmd"]
@@ -193,6 +198,10 @@ func registerSystemTools(r *ToolRegistry) {
 		Name:        "ok",
 		Description: "Call this when the task is complete and you have the final answer. The body text will be shown as the result.",
 		Args:        []ArgDef{},
+		Examples: []string{
+			`<tool:ok>Done! The file has been created.</tool:ok>`,
+			`<tool:ok>It's 22 degrees and sunny in Tokyo.</tool:ok>`,
+		},
 		Handler: func(attrs map[string]string, body string) ToolResult {
 			out := strings.TrimSpace(body)
 			if out == "" {
@@ -202,15 +211,20 @@ func registerSystemTools(r *ToolRegistry) {
 		},
 	})
 
-	// print
+	// continue
 	r.Register(&ToolDef{
-		Name:        "print",
-		Description: "Display text output to the user (URLs, lists, search results, code, etc.). Use this to show information without ending the task.",
+		Name:        "continue",
+		Description: "Show a message to the user and keep the agentic loop running. Use this for progress updates, asking questions, or when you need more info before finishing.",
 		Args:        []ArgDef{},
+		Examples: []string{
+			`<tool:continue>I'm looking that up now...</tool:continue>`,
+			`<tool:continue>Let me check the weather for both days.</tool:continue>`,
+			`<tool:continue>Do you want the short or long version?</tool:continue>`,
+		},
 		Handler: func(attrs map[string]string, body string) ToolResult {
 			text := strings.TrimSpace(body)
 			if text == "" {
-				text = "(empty)"
+				text = "..."
 			}
 			return ToolResult{Output: text}
 		},
@@ -221,6 +235,10 @@ func registerSystemTools(r *ToolRegistry) {
 		Name:        "thinking",
 		Description: "Show your internal reasoning / thought process. Use this BEFORE every tool call to explain what you're doing and why.",
 		Args:        []ArgDef{},
+		Examples: []string{
+			`<tool:thinking>The user wants the weather, I'll search for Tokyo.</tool:thinking>`,
+			`<tool:thinking>Step 1 is done, now moving to step 2.</tool:thinking>`,
+		},
 		Handler: func(attrs map[string]string, body string) ToolResult {
 			text := strings.TrimSpace(body)
 			if text == "" {
@@ -247,6 +265,27 @@ func registerSystemTools(r *ToolRegistry) {
 				return ToolResult{Output: fmt.Sprintf("'%s' not found in PATH", cmd)}
 			}
 			return ToolResult{Output: path}
+		},
+	})
+
+	// help
+	r.Register(&ToolDef{
+		Name:        "help",
+		Description: "Show detailed help for a tool: its parameters, types, and usage examples.",
+		Args: []ArgDef{
+			{Name: "tool", Type: "string", Required: false, Description: "Tool name to get help for (leave empty for list of all tools)"},
+		},
+		Examples: []string{
+			`<tool:help tool="web_search">`,
+			`<tool:help tool="bash">`,
+			`<tool:help>  (lists all tools)`,
+		},
+		Handler: func(attrs map[string]string, body string) ToolResult {
+			toolName := attrs["tool"]
+			if toolName == "" {
+				toolName = strings.TrimSpace(body)
+			}
+			return ToolResult{Output: r.Help(toolName)}
 		},
 	})
 }
